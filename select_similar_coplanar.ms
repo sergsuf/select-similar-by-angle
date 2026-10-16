@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tool: Select Similar by Angle 1.2.0 (Polygon / Edge Loop / Edge Ring)
+-- Tool: Select Similar by Angle 1.2.1 (Polygon / Edge Loop / Edge Ring)
 -- File: select_similar_coplanar.ms (MaxPkg package runtime)
 -- Category: Antigravity Tools
 -- Description: Ultra-fast face selection by angle with surface flood-fill,
@@ -35,7 +35,7 @@ try (rol_SelectCoplanar_NodeCallback = undefined) catch()
 try (callbacks.removeScripts id:#AgSelectCoplanarUndo) catch()
 rol_SelectCoplanar_IsUndoing = false
 
-rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.0" width:270 height:390
+rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:390
 (
     -- UI Configuration: Adjust margins and gaps here
     local btnSideMargin = 12    -- Distance in px from left/right edges of the dialog

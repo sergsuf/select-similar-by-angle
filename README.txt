@@ -1,4 +1,4 @@
-Select Similar by Angle - MaxPkg 1.2.0
+Select Similar by Angle - MaxPkg 1.2.1
 
 Activate an Editable Poly base or Edit Poly modifier in the Modify panel.
 Modifiers above the active cage are supported and preserved.
@@ -33,7 +33,7 @@ degenerate edges and closed cycles. Multiple seed edges are supported.
 Angles use active-cage object coordinates.
 
 Update and build
-dist contains the compiled MZP for 1.2.0.
+dist contains the compiled MZP for 1.2.1.
 The original 1.0.1 and 1.1.0 projects are preserved in sibling folders.
 Package GUID is unchanged so MaxPkg updates the existing installation.
 Run maxpkg-packager.ms in Max and click Build MZP to rebuild.
