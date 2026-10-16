@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tool: Select Similar by Angle 1.1.0 (Polygon / Edge Loop)
+-- Tool: Select Similar by Angle 1.2.0 (Polygon / Edge Loop / Edge Ring)
 -- File: select_similar_coplanar.ms (MaxPkg package runtime)
 -- Category: Antigravity Tools
 -- Description: Ultra-fast face selection by angle with surface flood-fill,
@@ -35,7 +35,7 @@ try (rol_SelectCoplanar_NodeCallback = undefined) catch()
 try (callbacks.removeScripts id:#AgSelectCoplanarUndo) catch()
 rol_SelectCoplanar_IsUndoing = false
 
-rollout rol_SelectCoplanarTool "Select Similar by Angle 1.1.0" width:270 height:345
+rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.0" width:270 height:390
 (
     -- UI Configuration: Adjust margins and gaps here
     local btnSideMargin = 12    -- Distance in px from left/right edges of the dialog
@@ -62,6 +62,11 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.1.0" width:270 height:
     group "Direction"
     (
         radiobuttons rad_dir labels:#("All", "Row", "Column") default:1 columns:3 offset:[0,-2]
+    )
+
+    group "Edge Traversal"
+    (
+        radiobuttons rad_edge labels:#("Loop", "Ring") default:1 columns:2 enabled:false offset:[0,-2]
     )
 
     -- 4. Filter Options
@@ -235,9 +240,10 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.1.0" width:270 height:
             contextKey = newKey
         )
         rad_dir.enabled = not isEdgeMode
+        rad_edge.enabled = isEdgeMode
         chk_connected.enabled = not isEdgeMode
         chk_sameElement.enabled = not isEdgeMode
-        lbl_angle.text = if isEdgeMode then "Loop Turn Angle" else "Angle Threshold"
+        lbl_angle.text = if isEdgeMode then (if rad_edge.state == 1 then "Loop Turn Angle" else "Ring Edge Angle") else "Angle Threshold"
         true
     )
 
@@ -571,10 +577,73 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.1.0" width:270 height:
         result
     )
 
+    fn edgeDirection e =
+    (
+        local ends = cageEdgeVerts e
+        local direction = (cageVertex ends[2]) - (cageVertex ends[1])
+        if length direction > 0.000001 then normalize direction else [0,0,0]
+    )
+
+    fn expandEdgeRings seeds =
+    (
+        local result = copy seeds
+        if spn_angle.value <= 0.0001 do return result
+        local minCos = cos spn_angle.value
+        for seed in seeds do
+        (
+            local seedDirection = edgeDirection seed
+            if length seedDirection > 0.000001 do
+            (
+                -- A seed can start a strip on each of its two sides.
+                for startFace in (cageFacesUsingEdges currentObj seed) do
+                (
+                    local curEdge = seed
+                    local curFace = startFace
+                    local prevDirection = seedDirection
+                    local visited = #{seed}
+                    local finished = false
+                    while not finished do
+                    (
+                        local edges = cageFaceEdges currentObj curFace
+                        local entry = findItem edges curEdge
+                        -- A ring has a unique opposite edge only on a quad.
+                        if edges.count != 4 or entry == 0 then finished = true
+                        else
+                        (
+                            local nextEdge = edges[(mod (entry + 1) 4) + 1]
+                            if visited[nextEdge] then finished = true
+                            else
+                            (
+                                local direction = edgeDirection nextEdge
+                                local reference = if chk_recursive.checked then prevDirection else seedDirection
+                                -- Edge endpoint numbering does not define an orientation.
+                                if length direction <= 0.000001 or (abs (dot reference direction)) < (minCos - 0.000001) then finished = true
+                                else
+                                (
+                                    result[nextEdge] = true
+                                    visited[nextEdge] = true
+                                    local nextFaces = (cageFacesUsingEdges currentObj nextEdge) - #{curFace}
+                                    if nextFaces.numberSet != 1 then finished = true
+                                    else
+                                    (
+                                        curEdge = nextEdge
+                                        curFace = (nextFaces as array)[1]
+                                        prevDirection = direction
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        result
+    )
+
     fn expandClusterFromSeed seedBitSet =
     (
         if seedBitSet.isEmpty do return #{}
-        if isEdgeMode do return (expandEdgeLoops seedBitSet)
+        if isEdgeMode do return (if rad_edge.state == 1 then expandEdgeLoops seedBitSet else expandEdgeRings seedBitSet)
         if not isEdgeMode and cachedNormals.count != numFaces do (
             if not cacheMeshData() do return #{}
         )
@@ -1031,6 +1100,12 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.1.0" width:270 height:
 
     on rad_dir changed state do
     (
+        applyAngleSelection isInteractive:false
+    )
+
+    on rad_edge changed state do
+    (
+        -- Keep the original seeds when toggling traversal on the same cage.
         applyAngleSelection isInteractive:false
     )
 
