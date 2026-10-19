@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tool: Select Similar by Angle 1.2.1 (Polygon / Edge Loop / Edge Ring)
+-- Tool: Select Similar by Angle 2.1.0 (Polygon / Edge Loop / Edge Ring / Angle Threshold)
 -- File: select_similar_coplanar.ms (MaxPkg package runtime)
 -- Category: Antigravity Tools
 -- Description: Ultra-fast face selection by angle with surface flood-fill,
@@ -30,12 +30,20 @@ if ((dotnet.getType "AgAngleSliderV3") == undefined) do (
     if ((dotnet.getType "AgAngleSliderV3") == undefined) do throw "Could not load the packaged angle slider."
 )
 -- Clean up any existing instance or callback
+-- Disable handlers synchronously; dropping a reference only removes them after GC.
+try (if rol_SelectCoplanar_NodeCallback != undefined do rol_SelectCoplanar_NodeCallback.enabled = false) catch()
+try
+(
+    -- Retire handlers orphaned by older source or installed versions in this session.
+    for entry in (showNodeEventCallbacks asArray:true) where entry.count >= 4 do
+        if entry[3] == "onSubSelEv" and (getFilenameFile entry[4]) == "select_similar_coplanar" do entry[1].enabled = false
+) catch()
 try (destroyDialog rol_SelectCoplanarTool) catch()
 try (rol_SelectCoplanar_NodeCallback = undefined) catch()
 try (callbacks.removeScripts id:#AgSelectCoplanarUndo) catch()
 rol_SelectCoplanar_IsUndoing = false
 
-rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:390
+rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:408
 (
     -- UI Configuration: Adjust margins and gaps here
     local btnSideMargin = 12    -- Distance in px from left/right edges of the dialog
@@ -66,7 +74,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
 
     group "Edge Traversal"
     (
-        radiobuttons rad_edge labels:#("Loop", "Ring") default:1 columns:2 enabled:false offset:[0,-2]
+        radiobuttons rad_edge labels:#("Loop", "Ring", "Angle Threshold") default:1 columns:2 enabled:false offset:[0,-2]
     )
 
     -- 4. Filter Options
@@ -100,6 +108,10 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     local lastScriptResultFaces = #{}
     local seedList = #()
     local expandedList = #()
+    local selectionUpdateBusy = false
+    local selectionWriteBusy = false
+    local selectionBudgetStart = 0
+    local selectionBudgetLimit = 0
 
     -- In-memory session presets & default values
     local presetValues = rol_SelectCoplanar_SessionPresets
@@ -243,7 +255,10 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         rad_edge.enabled = isEdgeMode
         chk_connected.enabled = not isEdgeMode
         chk_sameElement.enabled = not isEdgeMode
-        lbl_angle.text = if isEdgeMode then (if rad_edge.state == 1 then "Loop Turn Angle" else "Ring Edge Angle") else "Angle Threshold"
+        lbl_angle.text = if isEdgeMode then (if rad_edge.state == 1 then "Loop Turn Angle" else if rad_edge.state == 2 then "Ring Edge Angle" else "Angle Threshold") else "Angle Threshold"
+        chk_recursive.tooltip = if isEdgeMode then \
+            "When checked, compare each next edge with the previous edge to follow curved paths. When unchecked, compare with the original seed direction." else \
+            "When checked, tests angle between adjacent neighbor faces (smooth surface traversal across curves). When unchecked, tests absolute angle against the clicked reference face."
         true
     )
 
@@ -251,14 +266,16 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
 
     -- All topology queries use the active cage, including Edit Poly modifiers
     -- that change topology relative to the base object.
+    -- Use the standalone mixin interface: modifier.Get... repeatedly searches
+    -- the modifier's interfaces and is very expensive inside traversal loops.
     fn cageVertex v =
-        (if isEditPolyMod then activeMod.GetVertex v node:currentObj else polyOp.getVert activeBase v)
+        (if isEditPolyMod then EditPolyMod.GetVertex activeMod v node:currentObj else polyOp.getVert activeBase v)
 
     fn cageEdgeVerts e =
-        (if isEditPolyMod then #(activeMod.GetEdgeVertex e 1 node:currentObj, activeMod.GetEdgeVertex e 2 node:currentObj) else polyOp.getEdgeVerts activeBase e)
+        (if isEditPolyMod then #(EditPolyMod.GetEdgeVertex activeMod e 1 node:currentObj, EditPolyMod.GetEdgeVertex activeMod e 2 node:currentObj) else polyOp.getEdgeVerts activeBase e)
 
     fn cageFaceEdges obj f =
-        (if isEditPolyMod then (for i = 1 to (activeMod.GetFaceDegree f node:currentObj) collect (activeMod.GetFaceEdge f i node:currentObj)) else polyOp.getFaceEdges activeBase f)
+        (if isEditPolyMod then (for i = 1 to (EditPolyMod.GetFaceDegree activeMod f node:currentObj) collect (EditPolyMod.GetFaceEdge activeMod f i node:currentObj)) else polyOp.getFaceEdges activeBase f)
 
     fn cageFacesUsingEdges obj edges =
     (
@@ -267,7 +284,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         local edgeSet = if classOf edges == Integer then #{edges} else edges
         for e in edgeSet do for side = 1 to 2 do
         (
-            local f = activeMod.GetEdgeFace e side node:currentObj
+            local f = EditPolyMod.GetEdgeFace activeMod e side node:currentObj
             if f > 0 do result[f] = true
         )
         result
@@ -299,9 +316,9 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     (
         if not isEditPolyMod do return (polyOp.getEdgesUsingVert activeBase #{v})
         local result = #{}
-        for i = 1 to (activeMod.GetVertexEdgeCount v node:currentObj) do
+        for i = 1 to (EditPolyMod.GetVertexEdgeCount activeMod v node:currentObj) do
         (
-            local e = activeMod.GetVertexEdge v i node:currentObj
+            local e = EditPolyMod.GetVertexEdge activeMod v i node:currentObj
             if e > 0 do result[e] = true
         )
         result
@@ -311,13 +328,13 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     (
         if not isEditPolyMod do return (polyOp.getFaceNormal activeBase f)
         -- Newell normal preserves polygon winding and works for n-gons.
-        local degree = activeMod.GetFaceDegree f node:currentObj
+        local degree = EditPolyMod.GetFaceDegree activeMod f node:currentObj
         local normal = [0,0,0]
         if degree < 3 do return normal
         for i = 1 to degree do
         (
-            local a = cageVertex (activeMod.GetFaceVertex f i node:currentObj)
-            local b = cageVertex (activeMod.GetFaceVertex f ((mod i degree) + 1) node:currentObj)
+            local a = cageVertex (EditPolyMod.GetFaceVertex activeMod f i node:currentObj)
+            local b = cageVertex (EditPolyMod.GetFaceVertex activeMod f ((mod i degree) + 1) node:currentObj)
             normal += cross a b
         )
         if length normal > 0.000001 then normalize normal else [0,0,0]
@@ -327,7 +344,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     (
         try (
             if isEditPolyMod and activeMod != undefined then
-                activeMod.GetSelection (if isEdgeMode then #Edge else #Face) node:currentObj
+                EditPolyMod.GetSelection activeMod (if isEdgeMode then #Edge else #Face) node:currentObj
             else if isValidNode currentObj and activeBase != undefined then
                 (if isEdgeMode then polyOp.getEdgeSelection activeBase else polyOp.getFaceSelection activeBase)
             else
@@ -350,49 +367,67 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
                     )
                 )
             )
+            rol_SelectCoplanar_NodeCallback.enabled = true
         )
         else
         (
-            rol_SelectCoplanar_NodeCallback = undefined
+            if rol_SelectCoplanar_NodeCallback != undefined do rol_SelectCoplanar_NodeCallback.enabled = false
         )
     )
 
-    fn setFaceSelectionToObj selBitArray =
+    fn setFaceSelectionToObj selBitArray skipUnchanged:false =
     (
+        if selectionWriteBusy do return false
         if not getTargetContext() do return false
 
-        -- Temporarily disable callback so our programmatic selection does not queue feedback events
-        local cbWasActive = (rol_SelectCoplanar_NodeCallback != undefined)
-        rol_SelectCoplanar_NodeCallback = undefined
+        selectionWriteBusy = true
+        -- Reuse one handler and suspend it during native selection writes.
+        local savedCallback = rol_SelectCoplanar_NodeCallback
+        local cbWasActive = savedCallback != undefined and savedCallback.enabled
+        if savedCallback != undefined do savedCallback.enabled = false
+        local succeeded = false
 
         try (
-            if isEditPolyMod and activeMod != undefined then
+            -- Many slider values produce the same loop. Avoid native writes and
+            -- reevaluating modifiers above the cage for an unchanged preview.
+            local previousSelection = if skipUnchanged then getFaceSelectionFromObj() else undefined
+            if skipUnchanged and previousSelection == selBitArray then
             (
-                local level = if isEdgeMode then #Edge else #Face
-                local oldSelection = activeMod.GetSelection level node:currentObj
-                -- Select updates the modifier's live local selection. SetSelection
-                -- alone can report success without changing it in Max 2025.
-                activeMod.Select level &oldSelection select:false node:currentObj
-                activeMod.Select level &selBitArray node:currentObj
+                lastScriptResultFaces = copy selBitArray
+                succeeded = true
             )
-            else if activeBase != undefined then
+            else
             (
-                if isEdgeMode then polyOp.setEdgeSelection activeBase selBitArray else polyOp.setFaceSelection activeBase selBitArray
+                if isEditPolyMod and activeMod != undefined then
+                (
+                    local level = if isEdgeMode then #Edge else #Face
+                    local oldSelection = EditPolyMod.GetSelection activeMod level node:currentObj
+                    -- Select updates the modifier's live local selection. SetSelection
+                    -- alone can report success without changing it in Max 2025.
+                    EditPolyMod.Select activeMod level &oldSelection select:false node:currentObj
+                    EditPolyMod.Select activeMod level &selBitArray node:currentObj
+                )
+                else if activeBase != undefined then
+                (
+                    if isEdgeMode then polyOp.setEdgeSelection activeBase selBitArray else polyOp.setFaceSelection activeBase selBitArray
+                )
+                lastScriptResultFaces = copy selBitArray
+                redrawViews()
+                succeeded = true
             )
-            lastScriptResultFaces = copy selBitArray
-            redrawViews()
-        ) catch ()
+        ) catch (lbl_status.text = "Selection failed: " + (getCurrentException() as string))
 
-        -- Re-enable callback for user clicks
-        if cbWasActive and chk_autoExpand.checked do
-            updateCallbackRegistration true
+        if cbWasActive and chk_autoExpand.checked and savedCallback == rol_SelectCoplanar_NodeCallback do
+            savedCallback.enabled = true
+        selectionWriteBusy = false
+        succeeded
     )
 
     fn cacheMeshData =
     (
         if not isValidNode currentObj do return false
         try (
-            numFaces = if isEditPolyMod then activeMod.GetNumFaces node:currentObj else polyOp.getNumFaces activeBase
+            numFaces = if isEditPolyMod then EditPolyMod.GetNumFaces activeMod node:currentObj else polyOp.getNumFaces activeBase
             cachedNormals = if isEdgeMode then #() else (for f = 1 to numFaces collect (cageFaceNormal f))
 
             -- Heavy mesh protection (>50,000 polygons): throttle to 1000ms if enabled
@@ -503,7 +538,13 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         res
     )
 
-    fn expandEdgeLoops seeds =
+    fn checkEdgeSelectionBudget =
+    (
+        if selectionUpdateBusy and selectionBudgetLimit > 0 and (timeStamp()-selectionBudgetStart) > selectionBudgetLimit do
+            throw "Calculation time limit reached. Reduce the seed count or angle."
+    )
+
+    fn expandEdgeLoops seeds byAngle:false =
     (
         local result = copy seeds
         -- Zero keeps just the seeds, as in Polygon mode.
@@ -511,6 +552,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         local minCos = cos spn_angle.value
         for seed in seeds do
         (
+            if byAngle do checkEdgeSelectionBudget()
             local ends = cageEdgeVerts seed
             for endpoint in ends do
             (
@@ -523,25 +565,61 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
                     seedDirection = normalize seedDirection
                     local prevDirection = seedDirection
                     local visited = #{seed}
+                    local visitedVertices = #{ends[1],ends[2]}
                     local finished = false
+                    local stepCount = 0
                     while not finished do
                     (
+                        stepCount += 1
+                        if byAngle and (mod stepCount 32) == 0 do checkEdgeSelectionBudget()
                         local incident = cageVertexEdges atVertex
-                        local curFaces = cageFacesUsingEdges currentObj curEdge
                         local candidates = #{}
-                        if curFaces.numberSet == 2 and incident.numberSet == 4 then
+                        local atPoint = cageVertex atVertex
+                        if byAngle then
                         (
-                            -- The loop continuation shares a vertex but no face.
+                            -- Any vertex valence is allowed, including triangulated cages.
+                            -- Rank locally even in absolute mode; the threshold below
+                            -- still compares against the seed when Recursive is off.
+                            local bestDot = -2.0
+                            local bestEdge = 0
+                            local runnerUpDot = -2.0
                             for e in (incident - #{curEdge}) do
-                                if ((cageFacesUsingEdges currentObj e) * curFaces).isEmpty do candidates[e] = true
+                            (
+                                local ev = cageEdgeVerts e
+                                local v = if ev[1] == atVertex then ev[2] else ev[1]
+                                local dir = (cageVertex v) - atPoint
+                                if length dir > 0.000001 do
+                                (
+                                    local alignment = dot prevDirection (normalize dir)
+                                    if alignment > bestDot then
+                                    (
+                                        runnerUpDot = bestDot
+                                        bestDot = alignment
+                                        bestEdge = e
+                                    )
+                                    else if alignment > runnerUpDot do runnerUpDot = alignment
+                                )
+                            )
+                            -- Stop at an ambiguous fork instead of choosing by edge ID.
+                            if bestEdge > 0 and (bestDot - runnerUpDot) > 0.000001 do candidates[bestEdge] = true
                         )
-                        else if curFaces.numberSet == 1 then
+                        else
                         (
-                            -- Follow an open boundary only when exactly two boundary edges meet.
-                            local boundary = #{}
-                            for e in incident do
-                                if (cageFacesUsingEdges currentObj e).numberSet == 1 do boundary[e] = true
-                            if boundary.numberSet == 2 do candidates = boundary - #{curEdge}
+                            local curFaces = cageFacesUsingEdges currentObj curEdge
+                            if curFaces.numberSet == 2 and incident.numberSet == 4 then
+                            (
+                                -- The loop continuation shares a vertex but no face.
+                                for e in (incident - #{curEdge}) do
+                                    if ((cageFacesUsingEdges currentObj e) * curFaces).isEmpty do candidates[e] = true
+                            )
+                            else if curFaces.numberSet == 1 then
+                            (
+                                -- Follow an open boundary only when exactly two boundary edges meet.
+                                local boundary = #{}
+                                for e in incident do
+                                    if (cageFacesUsingEdges currentObj e).numberSet == 1 do boundary[e] = true
+                                if boundary.numberSet == 2 do candidates = boundary - #{curEdge}
+                            )
                         )
                         if candidates.numberSet != 1 then finished = true
                         else
@@ -552,8 +630,11 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
                             (
                                 local nextEnds = cageEdgeVerts nextEdge
                                 local nextVertex = if nextEnds[1] == atVertex then nextEnds[2] else nextEnds[1]
-                                local direction = (cageVertex nextVertex) - (cageVertex atVertex)
-                                if length direction <= 0.000001 then finished = true
+                                local direction = (cageVertex nextVertex) - atPoint
+                                -- Geometric walks must not cross an already visited
+                                -- vertex through a different edge and spiral over the mesh.
+                                if byAngle and visitedVertices[nextVertex] and nextVertex != otherVertex then finished = true
+                                else if length direction <= 0.000001 then finished = true
                                 else
                                 (
                                     direction = normalize direction
@@ -563,6 +644,8 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
                                     (
                                         result[nextEdge] = true
                                         visited[nextEdge] = true
+                                        visitedVertices[nextVertex] = true
+                                        if byAngle and nextVertex == otherVertex do finished = true
                                         curEdge = nextEdge
                                         atVertex = nextVertex
                                         prevDirection = direction
@@ -643,7 +726,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     fn expandClusterFromSeed seedBitSet =
     (
         if seedBitSet.isEmpty do return #{}
-        if isEdgeMode do return (if rad_edge.state == 1 then expandEdgeLoops seedBitSet else expandEdgeRings seedBitSet)
+        if isEdgeMode do return (if rad_edge.state == 1 then expandEdgeLoops seedBitSet else if rad_edge.state == 2 then expandEdgeRings seedBitSet else expandEdgeLoops seedBitSet byAngle:true)
         if not isEdgeMode and cachedNormals.count != numFaces do (
             if not cacheMeshData() do return #{}
         )
@@ -860,7 +943,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         return true
     )
 
-    fn applyAngleSelection isInteractive:false =
+    fn applyAngleSelectionCore isInteractive:false =
     (
         if not syncReferenceFromSelection() do return false
         if not isEdgeMode and cachedNormals.count != numFaces do (
@@ -901,7 +984,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         (
             with undo off
             (
-                setFaceSelectionToObj finalSel
+                setFaceSelectionToObj finalSel skipUnchanged:true
             )
         )
         else
@@ -916,8 +999,22 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
         lbl_status.text = "Selected: " + (finalSel.numberSet as string) + " " + (componentLabel()) + throttleNote
     )
 
+    fn applyAngleSelection isInteractive:false =
+    (
+        if selectionUpdateBusy or selectionWriteBusy do return false
+        selectionUpdateBusy = true
+        selectionBudgetStart = timeStamp()
+        selectionBudgetLimit = if isInteractive then 2000 else 5000
+        local result = false
+        try (result = applyAngleSelectionCore isInteractive:isInteractive)
+        catch (lbl_status.text = "Selection failed: " + (getCurrentException() as string))
+        selectionUpdateBusy = false
+        selectionBudgetLimit = 0
+        result
+    )
+
     -- Viewport selection callback: only active when user explicitly enables it
-    fn onViewportSelectionChanged =
+    fn onViewportSelectionChangedCore =
     (
         if not chk_autoExpand.checked do return ()
         if not getTargetContext() do
@@ -1032,8 +1129,22 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
             expandedList = #()
 
             syncReferenceFromSelection forceUpdate:true customSeed:freshSeed
-            applyAngleSelection isInteractive:false
+            applyAngleSelectionCore isInteractive:false
         )
+    )
+
+    fn onViewportSelectionChanged =
+    (
+        if selectionUpdateBusy or selectionWriteBusy do return false
+        selectionUpdateBusy = true
+        selectionBudgetStart = timeStamp()
+        selectionBudgetLimit = 5000
+        local result = false
+        try (result = onViewportSelectionChangedCore())
+        catch (lbl_status.text = "Selection failed: " + (getCurrentException() as string))
+        selectionUpdateBusy = false
+        selectionBudgetLimit = 0
+        result
     )
 
     -- Preset Actions: Left-click applies, Right-click saves, Middle-click resets
@@ -1181,6 +1292,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 1.2.1" width:270 height:
     (
         -- Always cleanly unregister callbacks on tool close
         updateCallbackRegistration false
+        rol_SelectCoplanar_NodeCallback = undefined
         callbacks.removeScripts id:#AgSelectCoplanarUndo
     )
 )
