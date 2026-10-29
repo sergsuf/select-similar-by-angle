@@ -52,7 +52,6 @@ multiple seeds; zero angle/re-expansion; boundary corners and closure;
 unsupported modifier/vertex rejection; Edit Poly on a primitive;
 modifier normals/flood/row/loop; viewport callback; Add; recursive curved
 loop; absolute-angle stopping; threshold below the next turn.
-Additional package checks are recorded in source/verification-1.2.0.txt.
 Only 2025.3 was tested for this update. The inherited minimum version 2012
 is unverified. UI screenshot verification was unavailable through this
 bridge; rollout state and actual selection results were checked directly.
