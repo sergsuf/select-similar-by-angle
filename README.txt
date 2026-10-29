@@ -60,3 +60,5 @@ bridge; rollout state and actual selection results were checked directly.
 Project language
 All comments, interface text, docs and marketplace copy must be English.
 Developer: Sergij Vari. License: Free.
+
+Release numbering: use major.minor versions (2.2 through 2.9, then 3.0). MaxPkg requires major.minor.patch, so package metadata uses a fixed .0 patch (for example, 2.2.0).

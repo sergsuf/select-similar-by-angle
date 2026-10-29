@@ -1,5 +1,5 @@
--- =============================================================================
--- Tool: Select Similar by Angle 2.1.0 (Polygon / Edge Loop / Edge Ring / Angle Threshold)
+﻿-- =============================================================================
+-- Tool: Select Similar by Angle 2.2 (Polygon / Edge Loop / Edge Ring / Angle Threshold)
 -- File: select_similar_coplanar.ms (MaxPkg package runtime)
 -- Category: Antigravity Tools
 -- Description: Ultra-fast face selection by angle with surface flood-fill,
@@ -13,7 +13,22 @@
 global rol_SelectCoplanarTool
 global rol_SelectCoplanar_SessionPresets
 global rol_SelectCoplanar_NodeCallback
+global rol_SelectCoplanar_SessionUI
 global rol_SelectCoplanar_IsUndoing = false
+
+fn rol_SelectCoplanar_SaveSessionUI toolRollout = (
+    if (toolRollout == undefined) do return false
+    if (not toolRollout.inDialog) do return false
+    local windowPosition = getDialogPos toolRollout
+    -- Windows parks minimized owned dialogs near -32000; never persist that.
+    if (windowPosition.x < -30000 or windowPosition.y < -30000) do (
+        windowPosition = if (rol_SelectCoplanar_SessionUI != undefined) then rol_SelectCoplanar_SessionUI[1] else undefined
+    )
+    rol_SelectCoplanar_SessionUI = #(windowPosition, toolRollout.spn_angle.value, toolRollout.rad_dir.state, toolRollout.rad_edge.state, toolRollout.chk_autoExpand.checked, toolRollout.chk_connected.checked, toolRollout.chk_recursive.checked, toolRollout.chk_sameElement.checked, toolRollout.chk_throttle50k.checked, toolRollout.rad_mode.state)
+    -- SetValueSilent also stops the slider's deferred event timer.
+    toolRollout.sld_angle.SetValueSilent toolRollout.spn_angle.value
+    return true
+)
 
 -- Factory defaults
 global rol_SelectCoplanar_DefaultPresets = #(5.0, 10.0, 15.0, 20.0, 30.0, 45.0)
@@ -29,7 +44,15 @@ if ((dotnet.getType "AgAngleSliderV3") == undefined) do (
     dotNet.loadAssembly sliderAssemblyPath
     if ((dotnet.getType "AgAngleSliderV3") == undefined) do throw "Could not load the packaged angle slider."
 )
+if ((dotnet.getType "AgRoundedPresetButtonV4") == undefined) do (
+    local buttonAssemblyPath = (getFilenamePath (getThisScriptFileName())) + "lib\\AgRoundedPresetButtonV4.dll"
+    if (not (doesFileExist buttonAssemblyPath)) do throw ("Preset button assembly not found: " + buttonAssemblyPath)
+    dotNet.loadAssembly buttonAssemblyPath
+    if ((dotnet.getType "AgRoundedPresetButtonV4") == undefined) do throw "Could not load the packaged preset buttons."
+)
 -- Clean up any existing instance or callback
+rol_SelectCoplanar_SaveSessionUI rol_SelectCoplanarTool
+callbacks.removeScripts id:#AgSelectCoplanarTheme
 -- Disable handlers synchronously; dropping a reference only removes them after GC.
 try (if rol_SelectCoplanar_NodeCallback != undefined do rol_SelectCoplanar_NodeCallback.enabled = false) catch()
 try
@@ -43,7 +66,7 @@ try (rol_SelectCoplanar_NodeCallback = undefined) catch()
 try (callbacks.removeScripts id:#AgSelectCoplanarUndo) catch()
 rol_SelectCoplanar_IsUndoing = false
 
-rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:408
+rollout rol_SelectCoplanarTool "Select Similar by Angle 2.2" width:270 height:408
 (
     -- UI Configuration: Adjust margins and gaps here
     local btnSideMargin = 12    -- Distance in px from left/right edges of the dialog
@@ -59,12 +82,12 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:
     spinner spn_angle "" range:[0.0, 180.0, 15.0] type:#float scale:0.01 fieldwidth:55 align:#right offset:[0,2]
     dotNetControl sld_angle "AgAngleSliderV3" width:246 height:28 offset:[0,-1]
 
-    dotNetControl btn_p1 "System.Windows.Forms.Button" width:btn_width height:btn_height across:6 offset:[0,-2]
-    dotNetControl btn_p2 "System.Windows.Forms.Button" width:btn_width height:btn_height offset:[0,-2]
-    dotNetControl btn_p3 "System.Windows.Forms.Button" width:btn_width height:btn_height offset:[0,-2]
-    dotNetControl btn_p4 "System.Windows.Forms.Button" width:btn_width height:btn_height offset:[0,-2]
-    dotNetControl btn_p5 "System.Windows.Forms.Button" width:btn_width height:btn_height offset:[0,-2]
-    dotNetControl btn_p6 "System.Windows.Forms.Button" width:btn_width height:btn_height offset:[0,-2]
+    dotNetControl btn_p1 "AgRoundedPresetButtonV4" width:btn_width height:btn_height across:6 offset:[0,-2]
+    dotNetControl btn_p2 "AgRoundedPresetButtonV4" width:btn_width height:btn_height offset:[0,-2]
+    dotNetControl btn_p3 "AgRoundedPresetButtonV4" width:btn_width height:btn_height offset:[0,-2]
+    dotNetControl btn_p4 "AgRoundedPresetButtonV4" width:btn_width height:btn_height offset:[0,-2]
+    dotNetControl btn_p5 "AgRoundedPresetButtonV4" width:btn_width height:btn_height offset:[0,-2]
+    dotNetControl btn_p6 "AgRoundedPresetButtonV4" width:btn_width height:btn_height offset:[0,-2]
 
     -- 3. Direction Mode: All / Row / Column
     group "Direction"
@@ -124,6 +147,17 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:
     local colNormalFg = (dotnetClass "System.Drawing.Color").FromArgb 225 225 225
     local colActiveFg = (dotnetClass "System.Drawing.Color").White
     local mouseButtonsClass = (dotnetClass "System.Windows.Forms.MouseButtons")
+
+    fn syncSliderTheme = (
+        local maxBackground = colorMan.getColor #background
+        local sliderBackground = (dotNetClass "System.Drawing.Color").FromArgb ((amax 0 (amin 255 (floor (maxBackground.x*255.0+0.5)))) as integer) ((amax 0 (amin 255 (floor (maxBackground.y*255.0+0.5)))) as integer) ((amax 0 (amin 255 (floor (maxBackground.z*255.0+0.5)))) as integer)
+        if (sld_angle.BackColor != sliderBackground) do (
+            sld_angle.BackColor = sliderBackground
+            sld_angle.Invalidate()
+        )
+        for presetButton in #(btn_p1, btn_p2, btn_p3, btn_p4, btn_p5, btn_p6) do presetButton.CanvasColor = sliderBackground
+        return true
+    )
 
     fn formatAngleCaption val =
     (
@@ -1258,6 +1292,21 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:
 
     on rol_SelectCoplanarTool open do
     (
+        if (rol_SelectCoplanar_SessionUI != undefined) do (
+            spn_angle.value = rol_SelectCoplanar_SessionUI[2]
+            rad_dir.state = rol_SelectCoplanar_SessionUI[3]
+            rad_edge.state = rol_SelectCoplanar_SessionUI[4]
+            chk_autoExpand.checked = rol_SelectCoplanar_SessionUI[5]
+            chk_connected.checked = rol_SelectCoplanar_SessionUI[6]
+            chk_recursive.checked = rol_SelectCoplanar_SessionUI[7]
+            chk_sameElement.checked = rol_SelectCoplanar_SessionUI[8]
+            chk_throttle50k.checked = rol_SelectCoplanar_SessionUI[9]
+            rad_mode.state = rol_SelectCoplanar_SessionUI[10]
+            if (rol_SelectCoplanar_SessionUI[1] != undefined) do setDialogPos rol_SelectCoplanarTool rol_SelectCoplanar_SessionUI[1]
+        )
+        syncSliderTheme()
+        callbacks.removeScripts id:#AgSelectCoplanarTheme
+        callbacks.addScript #colorChanged "if (rol_SelectCoplanarTool != undefined) do (if (rol_SelectCoplanarTool.inDialog) do rol_SelectCoplanarTool.syncSliderTheme())" id:#AgSelectCoplanarTheme
         local flatStyle = (dotnetClass "System.Windows.Forms.FlatStyle").Flat
         local btnFont = dotnetobject "System.Drawing.Font" "Segoe UI" 8.5 (dotnetClass "System.Drawing.FontStyle").Regular
         local handCursor = (dotnetClass "System.Windows.Forms.Cursors").Hand
@@ -1275,7 +1324,7 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:
 
         layoutPresetButtons()
 
-        sld_angle.Value = spn_angle.value
+        sld_angle.SetValueSilent spn_angle.value
         updatePresetButtonsUI isDragging:false
         syncReferenceFromSelection forceUpdate:true
 
@@ -1290,6 +1339,8 @@ rollout rol_SelectCoplanarTool "Select Similar by Angle 2.1.0" width:270 height:
 
     on rol_SelectCoplanarTool close do
     (
+        rol_SelectCoplanar_SaveSessionUI rol_SelectCoplanarTool
+        callbacks.removeScripts id:#AgSelectCoplanarTheme
         -- Always cleanly unregister callbacks on tool close
         updateCallbackRegistration false
         rol_SelectCoplanar_NodeCallback = undefined
